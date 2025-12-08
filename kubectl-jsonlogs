@@ -1,0 +1,380 @@
+#!/usr/bin/env python3
+"""
+kubectl-jsonlogs: A kubectl plugin to parse and colorize JSON and timestamped logs.
+Works as both a kubectl plugin and k9s plugin.
+
+Usage:
+    # As kubectl plugin (pipe mode):
+    kubectl logs <pod> | kubectl jsonlogs
+    
+    # As k9s plugin (direct mode):
+    kubectl jsonlogs <name> <namespace> <context> [container]
+    
+    # When container is not specified, shows logs from all containers
+
+Features:
+    - Pretty-prints JSON logs with jq-like colorization
+    - Colorizes timestamped non-JSON logs
+    - Supports pods view: automatically tails logs from all containers
+    - Highlights container names in bold cyan for multi-container pods
+    - Minimal dependencies (uses only Python standard library)
+    - Optional virtual environment support
+"""
+
+import json
+import re
+import subprocess
+import sys
+from datetime import datetime
+from typing import Optional, Tuple
+
+# ANSI color codes (no external dependencies)
+class Colors:
+    RESET = '\033[0m'
+    BOLD = '\033[1m'
+    
+    # JSON colors (jq-like)
+    JSON_KEY = '\033[34m'      # Blue
+    JSON_STRING = '\033[32m'   # Green
+    JSON_NUMBER = '\033[35m'   # Magenta
+    JSON_BOOLEAN = '\033[33m'  # Yellow
+    JSON_NULL = '\033[90m'     # Dark gray
+    JSON_BRACE = '\033[36m'    # Cyan
+    
+    # Log level colors
+    ERROR = '\033[31m'         # Red
+    WARN = '\033[33m'          # Yellow
+    INFO = '\033[36m'          # Cyan
+    DEBUG = '\033[90m'         # Dark gray
+    
+    # Timestamp color
+    TIMESTAMP = '\033[90m'     # Dark gray
+
+
+def colorize_json_string(json_str: str, indent: int = 2) -> str:
+    """Colorize a JSON string similar to jq output."""
+    try:
+        obj = json.loads(json_str)
+        return colorize_json_value(obj, indent=indent, level=0)
+    except json.JSONDecodeError:
+        return json_str
+
+
+def colorize_json_value(value, indent: int = 2, level: int = 0) -> str:
+    """Recursively colorize JSON values."""
+    if value is None:
+        return f"{Colors.JSON_NULL}null{Colors.RESET}"
+    elif isinstance(value, bool):
+        color = Colors.JSON_BOOLEAN
+        return f"{color}{str(value).lower()}{Colors.RESET}"
+    elif isinstance(value, (int, float)):
+        return f"{Colors.JSON_NUMBER}{value}{Colors.RESET}"
+    elif isinstance(value, str):
+        # Escape special characters for display
+        escaped = json.dumps(value)
+        return f"{Colors.JSON_STRING}{escaped}{Colors.RESET}"
+    elif isinstance(value, dict):
+        if not value:
+            return f"{Colors.JSON_BRACE}{{}}{Colors.RESET}"
+        
+        lines = [f"{Colors.JSON_BRACE}{{{Colors.RESET}"]
+        items = list(value.items())
+        for i, (k, v) in enumerate(items):
+            key_part = f"{Colors.JSON_KEY}{json.dumps(str(k))}{Colors.RESET}"
+            value_part = colorize_json_value(v, indent, level + 1)
+            comma = "," if i < len(items) - 1 else ""
+            indent_str = " " * ((level + 1) * indent)
+            lines.append(f"{indent_str}{key_part}: {value_part}{comma}")
+        lines.append(f"{' ' * (level * indent)}{Colors.JSON_BRACE}}}{Colors.RESET}")
+        return "\n".join(lines)
+    elif isinstance(value, list):
+        if not value:
+            return f"{Colors.JSON_BRACE}[]{Colors.RESET}"
+        
+        lines = [f"{Colors.JSON_BRACE}[{Colors.RESET}"]
+        for i, item in enumerate(value):
+            value_part = colorize_json_value(item, indent, level + 1)
+            comma = "," if i < len(value) - 1 else ""
+            indent_str = " " * ((level + 1) * indent)
+            lines.append(f"{indent_str}{value_part}{comma}")
+        lines.append(f"{' ' * (level * indent)}{Colors.JSON_BRACE}]{Colors.RESET}")
+        return "\n".join(lines)
+    else:
+        return str(value)
+
+
+def detect_log_level(line: str) -> Optional[str]:
+    """Detect log level in a line (case-insensitive)."""
+    line_lower = line.lower()
+    if re.search(r'\b(error|err|exception|fatal|critical)\b', line_lower):
+        return 'ERROR'
+    elif re.search(r'\b(warn|warning)\b', line_lower):
+        return 'WARN'
+    elif re.search(r'\b(debug|trace)\b', line_lower):
+        return 'DEBUG'
+    elif re.search(r'\b(info|information)\b', line_lower):
+        return 'INFO'
+    return None
+
+
+def colorize_timestamped_line(line: str) -> str:
+    """Colorize a timestamped log line."""
+    colored_line = line
+    
+    # Colorize container name prefix from kubectl --all-containers (format: [container-name])
+    container_prefix_pattern = r'^(\[[^\]]+\])\s+'
+    container_match = re.match(container_prefix_pattern, line)
+    if container_match:
+        container_prefix = container_match.group(1)
+        # Use bold cyan for container names to make them stand out
+        colored_prefix = f"{Colors.BOLD}{Colors.JSON_BRACE}{container_prefix}{Colors.RESET} "
+        colored_line = colored_prefix + line[len(container_prefix):].lstrip()
+    
+    # Common timestamp patterns (ISO 8601, RFC3339, common log formats)
+    timestamp_patterns = [
+        r'(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?)',  # ISO 8601
+        r'(\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2})',  # YYYY/MM/DD HH:MM:SS
+        r'(\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\])',  # [YYYY-MM-DD HH:MM:SS]
+        r'(\d{2}/\w{3}/\d{4}:\d{2}:\d{2}:\d{2})',  # DD/Mon/YYYY:HH:MM:SS (nginx style)
+    ]
+    
+    for pattern in timestamp_patterns:
+        match = re.search(pattern, colored_line)
+        if match:
+            timestamp = match.group(1) if match.lastindex else match.group(0)
+            colored_timestamp = f"{Colors.TIMESTAMP}{timestamp}{Colors.RESET}"
+            colored_line = colored_line.replace(timestamp, colored_timestamp, 1)
+            break
+    
+    # Colorize log level if detected
+    log_level = detect_log_level(line)
+    if log_level:
+        if log_level == 'ERROR':
+            colored_line = f"{Colors.ERROR}{colored_line}{Colors.RESET}"
+        elif log_level == 'WARN':
+            colored_line = f"{Colors.WARN}{colored_line}{Colors.RESET}"
+        elif log_level == 'INFO':
+            colored_line = f"{Colors.INFO}{colored_line}{Colors.RESET}"
+        elif log_level == 'DEBUG':
+            colored_line = f"{Colors.DEBUG}{colored_line}{Colors.RESET}"
+    
+    return colored_line
+
+
+def process_line(line: str) -> str:
+    """Process a single log line - try JSON first, then timestamped log."""
+    line = line.rstrip('\n\r')
+    
+    # Extract container name prefix if present (from kubectl --all-containers)
+    container_prefix = None
+    container_prefix_pattern = r'^(\[[^\]]+\])\s+'
+    container_match = re.match(container_prefix_pattern, line)
+    if container_match:
+        container_prefix = container_match.group(1)
+        # Remove prefix temporarily for JSON parsing
+        line_without_prefix = line[len(container_prefix):].lstrip()
+    else:
+        line_without_prefix = line
+    
+    # Try to parse as JSON (without container prefix)
+    try:
+        # Attempt to parse the line as JSON
+        json.loads(line_without_prefix)
+        colored_json = colorize_json_string(line_without_prefix)
+        # Add container prefix back if it existed
+        if container_prefix:
+            colored_prefix = f"{Colors.BOLD}{Colors.JSON_BRACE}{container_prefix}{Colors.RESET} "
+            return colored_prefix + colored_json
+        return colored_json
+    except json.JSONDecodeError:
+        pass
+    
+    # Try to find JSON objects within the line (without container prefix)
+    json_pattern = r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}'
+    matches = re.finditer(json_pattern, line_without_prefix)
+    
+    if matches:
+        result = line_without_prefix
+        offset = 0
+        for match in matches:
+            json_str = match.group(0)
+            try:
+                # Validate it's actually JSON
+                json.loads(json_str)
+                colored_json = colorize_json_string(json_str)
+                start, end = match.span()
+                # Replace the JSON part with colored version
+                result = result[:start + offset] + colored_json + result[end + offset:]
+                offset += len(colored_json) - len(json_str)
+            except json.JSONDecodeError:
+                continue
+        
+        # Colorize the rest of the line (timestamps, etc.)
+        if result != line_without_prefix:
+            # Extract non-JSON parts and colorize them
+            parts = re.split(json_pattern, result)
+            colored_parts = [colorize_timestamped_line(part) if part.strip() else part 
+                           for part in parts]
+            colored_result = ''.join(colored_parts)
+            # Add container prefix back if it existed
+            if container_prefix:
+                colored_prefix = f"{Colors.BOLD}{Colors.JSON_BRACE}{container_prefix}{Colors.RESET} "
+                return colored_prefix + colored_result
+            return colored_result
+    
+    # Not JSON, treat as timestamped log (this will handle container prefix)
+    return colorize_timestamped_line(line)
+
+
+def load_venv_if_needed():
+    """
+    Simple virtual environment loader.
+    
+    Looks for a virtual environment in common locations:
+    - $HOME/.venv/ (default)
+    - $HOME/.kubectl-logs-venv/
+    - ./venv/
+    - ./.venv/
+    - ../venv/
+    
+    To use: Create a venv and install any optional dependencies there.
+    """
+    import os
+    import sys
+    from pathlib import Path
+    
+    script_dir = Path(__file__).parent.absolute()
+    home_venv = Path.home() / '.venv'
+    home_kubectl_logs_venv = Path.home() / '.kubectl-logs-venv'
+    possible_venvs = [
+        home_venv,  # Default location: $HOME/.venv
+        home_kubectl_logs_venv,  # Plugin-specific location: $HOME/.kubectl-logs-venv
+        script_dir / 'venv',
+        script_dir / '.venv',
+        script_dir.parent / 'venv',
+    ]
+    
+    for venv_path in possible_venvs:
+        if venv_path.exists():
+            # Modern approach: add venv site-packages to sys.path
+            site_packages = venv_path / 'lib' / f'python{sys.version_info.major}.{sys.version_info.minor}' / 'site-packages'
+            if site_packages.exists() and str(site_packages) not in sys.path:
+                sys.path.insert(0, str(site_packages))
+                return True
+            
+            # Fallback: try activate_this.py (for older venv setups)
+            activate_script = venv_path / 'bin' / 'activate_this.py'
+            if activate_script.exists():
+                try:
+                    exec(open(activate_script).read(), {'__file__': str(activate_script)})
+                    return True
+                except Exception:
+                    pass
+    
+    return False
+
+
+def execute_kubectl_logs(pod_name: str, namespace: str, context: str, container: Optional[str] = None):
+    """Execute kubectl logs command with the given parameters.
+    
+    Args:
+        pod_name: Name of the pod
+        namespace: Kubernetes namespace
+        context: Kubernetes context
+        container: Container name (optional, if not provided uses --all-containers)
+    """
+    cmd = ['kubectl', 'logs']
+    
+    if namespace and namespace != '':
+        cmd.extend(['-n', namespace])
+    
+    if context and context != '':
+        cmd.extend(['--context', context])
+    
+    # Always use the specified container if provided, otherwise use --all-containers
+    # For container scope in k9s, container will always be provided
+    if container and container != '':
+        cmd.extend(['-c', container])
+    else:
+        # Fallback: use all containers only if no container is specified
+        cmd.append('--all-containers')
+    
+    # Add follow flag for real-time logs
+    cmd.extend(['-f', pod_name])
+    
+    process = None
+    try:
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            universal_newlines=True,
+            bufsize=1
+        )
+        
+        # Process output line by line
+        for line in process.stdout:
+            try:
+                colored_line = process_line(line)
+                print(colored_line, end='')
+                sys.stdout.flush()
+            except Exception:
+                # If processing fails, just print the original line
+                print(line, end='')
+                sys.stdout.flush()
+        
+        process.wait()
+        return process.returncode
+    except KeyboardInterrupt:
+        if process:
+            process.terminate()
+        sys.exit(0)
+    except Exception as e:
+        print(f"Error executing kubectl logs: {e}", file=sys.stderr)
+        return 1
+
+
+def main():
+    """Main entry point."""
+    # Try to load virtual environment if available
+    load_venv_if_needed()
+    
+    # Check if output is a TTY for color support
+    if not sys.stdout.isatty():
+        # If not a TTY, disable colors
+        for attr in dir(Colors):
+            if not attr.startswith('_'):
+                setattr(Colors, attr, '')
+    
+    # Check if we're being called with k9s arguments (k9s mode)
+    # k9s passes: pod, namespace, context, container (from container scope)
+    # Args: $POD, $NAMESPACE, $CONTEXT, $NAME (where $NAME is the container name)
+    if len(sys.argv) >= 4:
+        pod_name = sys.argv[1]  # $POD - pod name
+        namespace = sys.argv[2]  # $NAMESPACE
+        context = sys.argv[3]  # $CONTEXT
+        container = sys.argv[4] if len(sys.argv) > 4 and sys.argv[4] != '' else None  # $NAME - container name
+        
+        # Execute kubectl logs and process output
+        exit_code = execute_kubectl_logs(pod_name, namespace, context, container)
+        sys.exit(exit_code if exit_code else 0)
+    
+    # Otherwise, process stdin (pipe mode)
+    try:
+        for line in sys.stdin:
+            try:
+                colored_line = process_line(line)
+                print(colored_line, end='')
+            except Exception as e:
+                # If processing fails, just print the original line
+                print(line, end='')
+    except KeyboardInterrupt:
+        sys.exit(0)
+    except BrokenPipeError:
+        # Handle pipe breaks gracefully (e.g., when piping to head)
+        sys.exit(0)
+
+
+if __name__ == '__main__':
+    main()
+

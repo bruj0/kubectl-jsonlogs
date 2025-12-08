@@ -1,0 +1,25 @@
+# k9s plugins configuration for kubectl-jsonlogs
+# 
+# To use this configuration:
+# 1. Copy this file to ~/.config/k9s/plugins.yaml, or
+# 2. Merge the contents into your existing ~/.config/k9s/config.yml under the 'plugins:' section
+#
+# When viewing a container in k9s, press the configured shortcut (default: Ctrl-J)
+# to view colorized, pretty-printed logs from the selected container.
+
+plugins:
+  json-logs:
+    shortCut: Ctrl-J
+    confirm: false
+    description: "Pretty JSON Logs (All Containers)"
+    scopes:
+      - container
+    command: kubectl
+    background: false
+    args:
+      - jsonlogs
+      - $POD
+      - $NAMESPACE
+      - $CONTEXT
+      - $NAME
+
