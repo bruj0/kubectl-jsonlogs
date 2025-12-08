@@ -1,10 +1,8 @@
-# kubectl-logs, kubectl-jq, and kubectl-jsonlogs Plugins
+# kubectl-jsonlogs Plugin
 
-kubectl plugins to parse and colorize JSON and timestamped logs, similar to `jq` but optimized for Kubernetes log streams.
+kubectl plugin to parse and colorize JSON and timestamped logs, similar to `jq` but optimized for Kubernetes log streams.
 
-- **kubectl-logs**: Pipe-based plugin for command-line usage
-- **kubectl-jq**: Works as both a kubectl plugin and k9s plugin (containers scope)
-- **kubectl-jsonlogs**: Works as both a kubectl plugin and k9s plugin (pods/logs scope) - **Recommended for k9s pods/logs view**
+- **kubectl-jsonlogs**: Works as both a kubectl plugin and k9s plugin (pods/logs scope)
 
 ## Features
 
@@ -18,23 +16,21 @@ kubectl plugins to parse and colorize JSON and timestamped logs, similar to `jq`
 
 ### Option 1: Direct Installation (Recommended)
 
-1. Make the scripts executable (already done):
+1. Make the script executable (already done):
 
    ```bash
-   chmod +x scripts/kubectl-logs scripts/kubectl-jq scripts/kubectl-jsonlogs
+   chmod +x kubectl-jsonlogs
    ```
 
 2. Add to your PATH:
 
    ```bash
    # Add to ~/.bashrc or ~/.zshrc
-   export PATH="$PATH:/path/to/workspace/scripts"
+   export PATH="$PATH:/path/to/workspace"
    ```
 
 3. Verify installation:
    ```bash
-   kubectl logs --help | grep logs
-   kubectl jq --help
    kubectl jsonlogs --help
    ```
 
@@ -44,23 +40,21 @@ kubectl plugins to parse and colorize JSON and timestamped logs, similar to `jq`
 # Create kubectl plugin directory if it doesn't exist
 mkdir -p ~/.kubectl/plugins
 
-# Create symlinks
-ln -s /path/to/workspace/scripts/kubectl-logs ~/.kubectl/plugins/kubectl-logs
-ln -s /path/to/workspace/scripts/kubectl-jq ~/.kubectl/plugins/kubectl-jq
-ln -s /path/to/workspace/scripts/kubectl-jsonlogs ~/.kubectl/plugins/kubectl-jsonlogs
+# Create symlink
+ln -s /path/to/workspace/kubectl-jsonlogs ~/.kubectl/plugins/kubectl-jsonlogs
 ```
 
 ### k9s Plugin Configuration
 
 #### Option 1: Use the provided plugins.yaml (Recommended)
 
-A ready-to-use `plugins.yaml` file is included in the scripts directory. To use it:
+A ready-to-use `plugins.yaml` file is included in the repository. To use it:
 
 1. Copy the plugins.yaml to your k9s config directory:
 
    ```bash
    mkdir -p ~/.config/k9s
-   cp /path/to/workspace/scripts/plugins.yaml ~/.config/k9s/plugins.yaml
+   cp /path/to/workspace/plugins.yaml ~/.config/k9s/plugins.yaml
    ```
 
 2. Or merge it into your existing `~/.config/k9s/config.yml` under the `plugins:` section.
@@ -99,43 +93,7 @@ Make sure `kubectl-jsonlogs` is in your PATH for k9s to find it.
 
 ## Usage
 
-### kubectl-logs (Pipe Mode)
-
-```bash
-# Pipe kubectl logs output through the plugin
-kubectl logs <pod-name> | kubectl-logs
-
-# Follow logs in real-time
-kubectl logs -f <pod-name> | kubectl-logs
-
-# With namespace
-kubectl logs -n <namespace> <pod-name> | kubectl-logs
-
-# Multiple containers
-kubectl logs <pod-name> -c <container-name> | kubectl-logs
-```
-
-### kubectl-jq (Direct Mode or k9s Plugin)
-
-**As kubectl plugin (pipe mode):**
-
-```bash
-kubectl logs <pod-name> | kubectl jq
-```
-
-**As k9s plugin (containers scope):**
-
-1. Navigate to a container in k9s
-2. Press `Ctrl-J` (or the shortcut you configured)
-3. The plugin will automatically fetch and colorize logs for that container
-
-**Direct usage (with arguments):**
-
-```bash
-kubectl jq <pod-name> <namespace> <context> [container-name]
-```
-
-### kubectl-jsonlogs (Direct Mode or k9s Plugin - Recommended for Logs View)
+### kubectl-jsonlogs (Direct Mode or k9s Plugin)
 
 **As kubectl plugin (pipe mode):**
 
@@ -173,7 +131,7 @@ kubectl jsonlogs <pod-name> <namespace> <context> <container-name>
 **JSON Logs:**
 
 ```bash
-kubectl logs my-app | kubectl-logs
+kubectl logs my-app | kubectl jsonlogs
 ```
 
 Output will be colorized JSON with:
@@ -187,7 +145,7 @@ Output will be colorized JSON with:
 **Timestamped Logs:**
 
 ```bash
-kubectl logs nginx-pod | kubectl-logs
+kubectl logs nginx-pod | kubectl jsonlogs
 ```
 
 Output will have:
@@ -208,7 +166,7 @@ If you need to add optional dependencies in the future:
 1. Create a virtual environment:
 
    ```bash
-   cd /path/to/workspace/scripts
+   cd /path/to/workspace
    python3 -m venv venv
    ```
 
@@ -221,7 +179,7 @@ If you need to add optional dependencies in the future:
 
 3. The script will automatically detect and use the venv if it exists in:
    - `$HOME/.venv/` (default location)
-   - `$HOME/.kubectl-logs-venv/` (plugin-specific location)
+   - `$HOME/.kubectl-jsonlogs-venv/` (plugin-specific location)
    - `./venv/` (relative to script)
    - `./.venv/`
    - `../venv/`
@@ -240,7 +198,7 @@ Colors are automatically disabled when output is not a TTY (e.g., when piping to
 **Plugin not found:**
 
 - Ensure the script is in your PATH
-- Verify the script is executable: `ls -l scripts/kubectl-logs scripts/kubectl-jq scripts/kubectl-jsonlogs`
+- Verify the script is executable: `ls -l kubectl-jsonlogs`
 - For k9s: Make sure `kubectl-jsonlogs` is accessible via `kubectl jsonlogs` command
 - For k9s: Ensure the plugin is configured with scope `container` and uses correct variables: `$POD`, `$NAMESPACE`, `$CONTEXT`, `$NAME`
 
