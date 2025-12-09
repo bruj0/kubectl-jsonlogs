@@ -4,6 +4,8 @@ kubectl plugin to parse and colorize JSON and timestamped logs, similar to `jq` 
 
 - **kubectl-jsonlogs**: Works as both a kubectl plugin and k9s plugin (pods/logs scope)
 
+![Screenshot](Screenshot%202025-12-09%20at%2010.39.43.png)
+
 ## Features
 
 - **JSON Log Parsing**: Pretty-prints JSON logs with colorized output (similar to `jq`)
