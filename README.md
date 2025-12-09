@@ -18,20 +18,14 @@ kubectl plugin to parse and colorize JSON and timestamped logs, similar to `jq` 
 
 ### Option 1: Direct Installation (Recommended)
 
-1. Make the script executable (already done):
+1. Make the script executable and copy it to a directory in your PATH:
 
    ```bash
    chmod +x kubectl-jsonlogs
+   cp kubectl-jsonlogs $HOME/.local/bin
    ```
 
-2. Add to your PATH:
-
-   ```bash
-   # Add to ~/.bashrc or ~/.zshrc
-   export PATH="$PATH:/path/to/workspace"
-   ```
-
-3. Verify installation:
+2. Verify installation:
    ```bash
    kubectl jsonlogs --help
    ```
@@ -55,6 +49,7 @@ A ready-to-use `plugins.yaml` file is included in the repository. To use it:
 1. Copy the plugins.yaml to your k9s config directory:
 
    ```bash
+   k9s info # check the plugin path
    mkdir -p ~/.config/k9s
    cp /path/to/workspace/plugins.yaml ~/.config/k9s/plugins.yaml
    ```
