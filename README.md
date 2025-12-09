@@ -4,11 +4,12 @@ kubectl plugin to parse and colorize JSON and timestamped logs, similar to `jq` 
 
 - **kubectl-jsonlogs**: Works as both a kubectl plugin and k9s plugin (pods/logs scope)
 
-![Screenshot](Screenshot%202025-12-09%20at%2010.39.43.png)
+![Screenshot](./Screenshot%202025-12-09%20at%2010.54.42.png)
 
 ## Features
 
 - **JSON Log Parsing**: Pretty-prints JSON logs with colorized output (similar to `jq`)
+- **Pulumi Output Formatting**: Automatically detects and pretty-prints Pulumi output in `msg` fields with colorized resource status, outputs, and summaries
 - **Timestamped Logs**: Automatically detects and colorizes timestamps in non-JSON logs
 - **Log Level Detection**: Colorizes log lines based on detected log levels (ERROR, WARN, INFO, DEBUG)
 - **Minimal Dependencies**: Uses only Python standard library (no external modules required)
@@ -155,6 +156,40 @@ Output will have:
 
 **Mixed Content:**
 The plugin automatically detects JSON objects within log lines and colorizes them appropriately.
+
+**Pulumi Output:**
+When JSON logs contain Pulumi output in the `msg` field, it is automatically detected and formatted as a multi-line, colorized block:
+
+```bash
+kubectl logs my-pulumi-app | kubectl jsonlogs
+```
+
+Pulumi output formatting includes:
+- **Resource status lines**: Colorized based on status (green for creating/created, yellow for updating)
+- **Section headers**: Bold cyan for "Outputs:", "Resources:", "Duration:"
+- **Status indicators**: Yellow for "@ updating" lines
+- **Output values**: Formatted with colored keys and values
+- **Summary lines**: Formatted resource counts and durations
+
+Example output:
+```json
+{
+  "level": "info",
+  "msg":
+    Resource Updated Updating (resource):
+    
+     +  pulumi:pulumi:Stack my-stack creating (0s)
+     +  aws:iam:Policy my-policy created (0.91s)
+    
+    Outputs:
+        roleArn: "arn:aws:iam::123456789012:role/my-role"
+    
+    Resources:
+        + 5 created
+    
+    Duration: 5s
+}
+```
 
 ## Virtual Environment Support
 

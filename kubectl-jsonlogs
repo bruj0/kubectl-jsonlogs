@@ -49,6 +49,146 @@ class Colors:
     
     # Timestamp color
     TIMESTAMP = '\033[90m'     # Dark gray
+    
+    # Pulumi output colors
+    PULUMI_RESOURCE_CREATING = '\033[32m'  # Green for creating
+    PULUMI_RESOURCE_UPDATING = '\033[33m'  # Yellow for updating
+    PULUMI_RESOURCE_CREATED = '\033[32m'   # Green for created
+    PULUMI_SECTION_HEADER = '\033[1m\033[36m'  # Bold cyan for section headers
+    PULUMI_DURATION = '\033[35m'  # Magenta for duration
+    PULUMI_STATUS = '\033[36m'    # Cyan for status indicators
+
+
+def is_pulumi_output(text: str) -> bool:
+    """Check if a string contains Pulumi output."""
+    if not text:
+        return False
+    # Check for common Pulumi patterns
+    pulumi_patterns = [
+        r'pulumi:pulumi:Stack',
+        r'Resource Updated',
+        r'Updating \(resource\)',
+        r'Previewing update',
+        r'@ updating',
+        r'@ previewing',
+        r'Outputs:',
+        r'Resources:',
+        r'Duration:',
+        r'\+\s+\w+:\w+:',  # Resource type pattern like "aws:iam:Policy"
+    ]
+    return any(re.search(pattern, text) for pattern in pulumi_patterns)
+
+
+def format_pulumi_output(text: str) -> str:
+    """Format and colorize Pulumi output."""
+    lines = text.split('\n')
+    formatted_lines = []
+    
+    for line in lines:
+        if not line.strip():
+            formatted_lines.append('')
+            continue
+        
+        # Section headers (Outputs:, Resources:, Duration:)
+        section_match = re.match(r'^(Outputs|Resources|Duration):\s*(.*)', line)
+        if section_match:
+            section_name = section_match.group(1)
+            section_value = section_match.group(2)
+            if section_value:
+                formatted_lines.append(f"{Colors.PULUMI_SECTION_HEADER}{section_name}:{Colors.RESET} {section_value}")
+            else:
+                formatted_lines.append(f"{Colors.PULUMI_SECTION_HEADER}{section_name}:{Colors.RESET}")
+            continue
+        
+        # Resource status lines: +  pulumi:pulumi:Stack ... creating (0s) or ... create
+        # Pattern: +  pulumi:pulumi:Stack appauth-e2e-test-e2e-clientapp-1208170521-local-da57-resource creating (0s)
+        # Pattern: +  pulumi:pulumi:Stack schedule-e2e-test-e2e-schedule-1208170809-617-b4b2-resource create
+        resource_match_with_time = re.match(r'^(\s*)([+\-~])\s+([^\s]+(?::[^\s]+)*)\s+(.+?)\s+(\w+)\s+\(([^)]+)\)\s*$', line)
+        resource_match_no_time = re.match(r'^(\s*)([+\-~])\s+([^\s]+(?::[^\s]+)*)\s+(.+?)\s+(\w+)\s*$', line)
+        
+        if resource_match_with_time:
+            indent = resource_match_with_time.group(1)
+            symbol = resource_match_with_time.group(2)
+            resource_type = resource_match_with_time.group(3)
+            resource_name = resource_match_with_time.group(4)
+            status = resource_match_with_time.group(5)
+            time = resource_match_with_time.group(6)
+            
+            # Determine color based on status
+            if 'creating' in status.lower():
+                status_color = Colors.PULUMI_RESOURCE_CREATING
+            elif 'updating' in status.lower():
+                status_color = Colors.PULUMI_RESOURCE_UPDATING
+            elif 'created' in status.lower() or 'updated' in status.lower():
+                status_color = Colors.PULUMI_RESOURCE_CREATED
+            else:
+                status_color = Colors.PULUMI_STATUS
+            
+            formatted_line = f"{indent}{symbol}  {Colors.JSON_BRACE}{resource_type}{Colors.RESET} {resource_name} {status_color}{status} ({time}){Colors.RESET}"
+            formatted_lines.append(formatted_line)
+            continue
+        elif resource_match_no_time:
+            indent = resource_match_no_time.group(1)
+            symbol = resource_match_no_time.group(2)
+            resource_type = resource_match_no_time.group(3)
+            resource_name = resource_match_no_time.group(4)
+            status = resource_match_no_time.group(5)
+            
+            # Determine color based on status
+            if 'create' in status.lower():
+                status_color = Colors.PULUMI_RESOURCE_CREATING
+            elif 'update' in status.lower():
+                status_color = Colors.PULUMI_RESOURCE_UPDATING
+            else:
+                status_color = Colors.PULUMI_STATUS
+            
+            formatted_line = f"{indent}{symbol}  {Colors.JSON_BRACE}{resource_type}{Colors.RESET} {resource_name} {status_color}{status}{Colors.RESET}"
+            formatted_lines.append(formatted_line)
+            continue
+        
+        # Status indicators: @ updating.... or @ previewing update....
+        if re.match(r'^@\s+(updating|previewing)', line, re.IGNORECASE):
+            formatted_lines.append(f"{Colors.PULUMI_RESOURCE_UPDATING}{line}{Colors.RESET}")
+            continue
+        
+        # Output values: roleArn: "arn:aws:iam::..."
+        # Pattern:     roleArn: "arn:aws:iam::429583250656:role/e2e-test-e2e-clientapp-1208170521-local-da57-sa-role"
+        output_match = re.match(r'^(\s+)(\w+):\s+(.+)', line)
+        if output_match:
+            indent = output_match.group(1)
+            key = output_match.group(2)
+            value = output_match.group(3)
+            formatted_lines.append(f"{indent}{Colors.JSON_KEY}{key}{Colors.RESET}: {Colors.JSON_STRING}{value}{Colors.RESET}")
+            continue
+        
+        # Summary lines: + 5 created or + 2 to create
+        # Match "to create" first, then other actions (order matters - longer matches first)
+        summary_match = re.match(r'^(\s*)([+\-])\s+(\d+)\s+(to\s+)?(created|updated|deleted|create)', line, re.IGNORECASE)
+        if summary_match:
+            indent = summary_match.group(1)
+            symbol = summary_match.group(2)
+            count = summary_match.group(3)
+            to_prefix = summary_match.group(4) or ''
+            action = summary_match.group(5)
+            formatted_lines.append(f"{indent}{symbol} {Colors.JSON_NUMBER}{count}{Colors.RESET} {Colors.PULUMI_RESOURCE_CREATED}{to_prefix}{action}{Colors.RESET}")
+            continue
+        
+        # Duration line: Duration: 5s
+        duration_match = re.match(r'^Duration:\s*(.+)', line)
+        if duration_match:
+            duration = duration_match.group(1)
+            formatted_lines.append(f"{Colors.PULUMI_SECTION_HEADER}Duration:{Colors.RESET} {Colors.PULUMI_DURATION}{duration}{Colors.RESET}")
+            continue
+        
+        # Text lines like "Resource Updated Updating (resource):" or "Previewing update (resource):"
+        if re.search(r'(Resource (Updated|Created|Deleted)|Previewing update|Updating \(resource\))', line, re.IGNORECASE):
+            formatted_lines.append(f"{Colors.PULUMI_SECTION_HEADER}{line}{Colors.RESET}")
+            continue
+        
+        # Default: keep original line
+        formatted_lines.append(line)
+    
+    return '\n'.join(formatted_lines)
 
 
 def colorize_json_string(json_str: str, indent: int = 2) -> str:
@@ -60,7 +200,7 @@ def colorize_json_string(json_str: str, indent: int = 2) -> str:
         return json_str
 
 
-def colorize_json_value(value, indent: int = 2, level: int = 0) -> str:
+def colorize_json_value(value, indent: int = 2, level: int = 0, key_name: Optional[str] = None) -> str:
     """Recursively colorize JSON values."""
     if value is None:
         return f"{Colors.JSON_NULL}null{Colors.RESET}"
@@ -81,9 +221,33 @@ def colorize_json_value(value, indent: int = 2, level: int = 0) -> str:
         items = list(value.items())
         for i, (k, v) in enumerate(items):
             key_part = f"{Colors.JSON_KEY}{json.dumps(str(k))}{Colors.RESET}"
-            value_part = colorize_json_value(v, indent, level + 1)
-            comma = "," if i < len(items) - 1 else ""
             indent_str = " " * ((level + 1) * indent)
+            comma = "," if i < len(items) - 1 else ""
+            
+            # Special handling for 'msg' and 'output' fields with Pulumi output - format it as multi-line
+            if str(k) in ('msg', 'output') and isinstance(v, str) and is_pulumi_output(v):
+                # Format the Pulumi output
+                formatted_pulumi = format_pulumi_output(v)
+                # Split into lines and indent each line
+                pulumi_lines = formatted_pulumi.split('\n')
+                if len(pulumi_lines) > 1:
+                    # Multi-line format - display as a formatted block
+                    # Start with the key
+                    lines.append(f"{indent_str}{key_part}:")
+                    # Find the last non-empty line index before adding lines
+                    last_non_empty_idx = -1
+                    for i, pulumi_line in enumerate(pulumi_lines):
+                        # Indent each line with extra spacing
+                        lines.append(f"{indent_str}  {pulumi_line}")
+                        if pulumi_line.strip():
+                            last_non_empty_idx = len(lines) - 1
+                    # Add comma to the last non-empty line if needed
+                    if comma and last_non_empty_idx >= 0:
+                        lines[last_non_empty_idx] = lines[last_non_empty_idx] + comma
+                    continue
+            
+            # Pass the key name for special handling (e.g., 'msg' field)
+            value_part = colorize_json_value(v, indent, level + 1, key_name=str(k))
             lines.append(f"{indent_str}{key_part}: {value_part}{comma}")
         lines.append(f"{' ' * (level * indent)}{Colors.JSON_BRACE}}}{Colors.RESET}")
         return "\n".join(lines)
@@ -93,7 +257,7 @@ def colorize_json_value(value, indent: int = 2, level: int = 0) -> str:
         
         lines = [f"{Colors.JSON_BRACE}[{Colors.RESET}"]
         for i, item in enumerate(value):
-            value_part = colorize_json_value(item, indent, level + 1)
+            value_part = colorize_json_value(item, indent, level + 1, key_name=None)
             comma = "," if i < len(value) - 1 else ""
             indent_str = " " * ((level + 1) * indent)
             lines.append(f"{indent_str}{value_part}{comma}")
