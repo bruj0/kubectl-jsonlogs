@@ -1,0 +1,22 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "kubectl-jsonlogs"
+version = "1.0.0"
+description = "A kubectl plugin to parse and colorize JSON and timestamped Kubernetes logs"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+keywords = ["kubectl", "kubernetes", "logs", "json", "k9s"]
+dependencies = []
+
+[project.scripts]
+kubectl-jsonlogs = "kubectl_jsonlogs.main:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/kubectl_jsonlogs"]
+
+[dependency-groups]
+dev = []

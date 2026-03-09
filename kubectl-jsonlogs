@@ -245,6 +245,121 @@ def format_pulumi_output(text: str) -> str:
     return '\n'.join(formatted_lines)
 
 
+_OPENHANDS_TOKEN_PATTERN = re.compile(
+    r"(UUID\('[0-9a-f-]+'\))"                             # UUID('...')
+    r"|(<[A-Za-z][A-Za-z0-9_]*\.[A-Z_]+:\s*'[^']*'>)"   # <EnumClass.MEMBER: 'value'>
+    r"|(\bNone\b)"                                         # None
+    r"|(\bTrue\b|\bFalse\b)"                               # True / False
+    r"|('[^']*'(?=\s*:))"                                  # dict key 'key':
+    r"|('[^']*')"                                          # string value 'value'
+    r"|(\b\d+(?:\.\d+)?\b)"                                # number
+)
+
+
+def _colorize_openhands_token(m: re.Match) -> str:
+    """Replace a single matched Python repr token with its ANSI-colored version."""
+    if m.group(1):
+        return f"{Colors.JSON_NUMBER}{m.group(1)}{Colors.RESET}"
+    elif m.group(2):
+        return f"{Colors.JSON_BOOLEAN}{m.group(2)}{Colors.RESET}"
+    elif m.group(3):
+        return f"{Colors.JSON_NULL}None{Colors.RESET}"
+    elif m.group(4):
+        return f"{Colors.JSON_BOOLEAN}{m.group(4)}{Colors.RESET}"
+    elif m.group(5):
+        return f"{Colors.JSON_KEY}{m.group(5)}{Colors.RESET}"
+    elif m.group(6):
+        return f"{Colors.JSON_STRING}{m.group(6)}{Colors.RESET}"
+    elif m.group(7):
+        return f"{Colors.JSON_NUMBER}{m.group(7)}{Colors.RESET}"
+    return m.group(0)
+
+
+def colorize_python_dict_repr(text: str) -> str:
+    """Colorize a Python dict/object repr string with ANSI colors.
+
+    Handles Python-specific types (UUID, Enum, None, bool) and standard
+    dict key-value pairs by scanning left-to-right with a single combined
+    regex, so earlier/more-specific groups always win.
+
+    Args:
+        text: Python repr string to colorize.
+
+    Returns:
+        ANSI-colored version of the repr string.
+    """
+    return _OPENHANDS_TOKEN_PATTERN.sub(_colorize_openhands_token, text)
+
+
+def is_openhands_state_message(text: str) -> bool:
+    """Check if a string is an OpenHands agent state/conversation message.
+
+    Detects the multi-line messages logged at conversation creation that
+    contain Python repr of OpenHands ``State`` and ``Agent`` objects.
+
+    Args:
+        text: String to inspect.
+
+    Returns:
+        True when the string matches an OpenHands state message.
+    """
+    if not text or '\n' not in text:
+        return False
+    openhands_patterns = [
+        r"State:\s*\{",
+        r"Agent:\s*\{",
+        r"UUID\('[0-9a-f-]+'\)",
+        r"<ConversationExecutionStatus\.",
+    ]
+    return any(re.search(pattern, text) for pattern in openhands_patterns)
+
+
+def format_openhands_state_message(text: str) -> str:
+    """Format and colorize an OpenHands agent state/conversation message.
+
+    Parses messages that contain a plain-text header followed by ``State:``
+    and ``Agent:`` sections whose values are Python repr of OpenHands
+    objects.  Each section label is highlighted in bold cyan; values are
+    colorized with :func:`colorize_python_dict_repr`.
+
+    Args:
+        text: Multi-line message string to format.
+
+    Returns:
+        ANSI-colored formatted string.
+    """
+    lines = text.split('\n')
+    formatted_lines = []
+
+    uuid_pattern = re.compile(
+        r'([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})'
+    )
+
+    for idx, line in enumerate(lines):
+        if not line.strip():
+            formatted_lines.append('')
+            continue
+
+        section_match = re.match(r'^(State|Agent):\s*(.*)', line, re.DOTALL)
+        if section_match:
+            label = section_match.group(1)
+            content = section_match.group(2)
+            colored_label = f"{Colors.BOLD}{Colors.JSON_BRACE}{label}:{Colors.RESET}"
+            colored_content = colorize_python_dict_repr(content)
+            formatted_lines.append(f"{colored_label} {colored_content}")
+        elif idx == 0:
+            # Header line — highlight UUIDs and render bold.
+            colored_line = uuid_pattern.sub(
+                lambda m: f"{Colors.JSON_NUMBER}{m.group(1)}{Colors.RESET}",
+                line,
+            )
+            formatted_lines.append(f"{Colors.BOLD}{colored_line}{Colors.RESET}")
+        else:
+            formatted_lines.append(colorize_python_dict_repr(line))
+
+    return '\n'.join(formatted_lines)
+
+
 def colorize_json_string(json_str: str, indent: int = 2) -> str:
     """Colorize a JSON string similar to jq output."""
     try:
@@ -290,7 +405,7 @@ def colorize_json_value(value, indent: int = 2, level: int = 0, key_name: Option
                     lines.append(f"{indent_str}{key_part}:")
                     # Find the last non-empty line index before adding lines
                     last_non_empty_idx = -1
-                    for i, pulumi_line in enumerate(pulumi_lines):
+                    for pulumi_line in pulumi_lines:
                         # Indent each line with extra spacing
                         lines.append(f"{indent_str}  {pulumi_line}")
                         if pulumi_line.strip():
@@ -299,7 +414,20 @@ def colorize_json_value(value, indent: int = 2, level: int = 0, key_name: Option
                     if comma and last_non_empty_idx >= 0:
                         lines[last_non_empty_idx] = lines[last_non_empty_idx] + comma
                     continue
-            
+            elif str(k) in ('msg', 'message') and isinstance(v, str) and is_openhands_state_message(v):
+                formatted_oh = format_openhands_state_message(v)
+                oh_lines = formatted_oh.split('\n')
+                if len(oh_lines) > 1:
+                    lines.append(f"{indent_str}{key_part}:")
+                    last_non_empty_idx = -1
+                    for oh_line in oh_lines:
+                        lines.append(f"{indent_str}  {oh_line}")
+                        if oh_line.strip():
+                            last_non_empty_idx = len(lines) - 1
+                    if comma and last_non_empty_idx >= 0:
+                        lines[last_non_empty_idx] = lines[last_non_empty_idx] + comma
+                    continue
+
             # Pass the key name for special handling (e.g., 'msg' field)
             value_part = colorize_json_value(v, indent, level + 1, key_name=str(k))
             lines.append(f"{indent_str}{key_part}: {value_part}{comma}")
